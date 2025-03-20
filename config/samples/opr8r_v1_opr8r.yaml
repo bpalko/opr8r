@@ -1,0 +1,9 @@
+apiVersion: opr8r.opr8r.io/v1
+kind: Opr8r
+metadata:
+  labels:
+    app.kubernetes.io/name: opr8r
+    app.kubernetes.io/managed-by: kustomize
+  name: opr8r-sample
+spec:
+  # TODO(user): Add fields here

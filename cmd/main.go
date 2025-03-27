@@ -39,6 +39,7 @@ import (
 
 	opr8rv1 "opr8r.io/opr8r/api/v1"
 	"opr8r.io/opr8r/internal/controller"
+	webhookopr8rv1 "opr8r.io/opr8r/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -208,6 +209,13 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Opr8r")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookopr8rv1.SetupOpr8rWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Opr8r")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

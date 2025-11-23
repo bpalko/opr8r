@@ -19,4 +19,4 @@
 1. Support different resource types
 1. Ensure vars match template expectations
 1. Unit tests for renderer, integration tests for controller
-1. After the `Simple` resource is deleted, the `ServiceAccount` and `RoleBinding` hang around in the NS. That ain't good...
+1. I don't like that the controller is creating a `ServiceAccount` and `RoleBinding`. Not very GitOps... Likely need to rework how the `Job` is creating the outputs

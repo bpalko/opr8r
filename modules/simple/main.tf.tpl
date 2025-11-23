@@ -53,9 +53,9 @@ variable "custom_vars" {
 # Putting this here so its easier to test
 # Makes it easier to see the jobs run, monitor the logs in real time,
 # and ensure we dont hit race conds
-resource "time_sleep" "wait_one_minute" {
+resource "time_sleep" "wait_twenty" {
   depends_on      = [local_file.output]
-  create_duration = "60s"
+  create_duration = "20s"
 }
 
 # Outputs

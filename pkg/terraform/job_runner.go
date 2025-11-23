@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1alpha1 "github.com/kbpalko/opr8r/api/v1alpha1"
 )
@@ -41,15 +42,21 @@ func NewJobRunner(client client.Client, workDir, action, namespace string) *JobR
 
 // RunJob creates and waits for a Terraform job to complete
 func (jr *JobRunner) RunJob(ctx context.Context, simple *infrav1alpha1.SimpleResource) ([]byte, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("Starting Terraform job", "Action", jr.action, "SimpleResource", simple.Name)
+
+	// Unique job name
 	jobName := fmt.Sprintf("terraform-%s-%s-%s", jr.action, simple.Name, time.Now().Format("20060102-150405"))
 
 	// Create ConfigMap with Terraform files
+	logger.Info("Creating ConfigMap for Terraform files", "JobName", jobName)
 	configMap, err := jr.createConfigMap(ctx, simple, jobName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ConfigMap: %w", err)
 	}
 
 	// Create the Job
+	logger.Info("Creating Terraform Job", "JobName", jobName)
 	job := jr.buildJob(simple, jobName, configMap.Name)
 	if err := controllerutil.SetControllerReference(simple, job, jr.client.Scheme()); err != nil {
 		return nil, fmt.Errorf("failed to set controller reference: %w", err)
@@ -65,6 +72,7 @@ func (jr *JobRunner) RunJob(ctx context.Context, simple *infrav1alpha1.SimpleRes
 	}
 
 	// Get outputs if this was an apply action
+	logger.Info("Terraform job completed successfully -- fetching outputs", "JobName", jobName)
 	if jr.action == "apply" {
 		return jr.getJobOutputs(ctx, jobName)
 	}
@@ -137,12 +145,6 @@ func (jr *JobRunner) buildJob(simple *infrav1alpha1.SimpleResource, jobName, con
 					MountPath: "/outputs",
 				},
 			},
-			Env: []corev1.EnvVar{
-				{
-					Name:  "TF_IN_AUTOMATION",
-					Value: "true",
-				},
-			},
 		})
 
 		// Add sidecar container that creates Secret with outputs
@@ -200,12 +202,6 @@ echo "Secret created successfully"
 						MountPath: "/workspace",
 					},
 				},
-				Env: []corev1.EnvVar{
-					{
-						Name:  "TF_IN_AUTOMATION",
-						Value: "true",
-					},
-				},
 			},
 		}
 	}
@@ -233,7 +229,7 @@ echo "Secret created successfully"
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: "terraform-executor",
+					ServiceAccountName: fmt.Sprintf("terraform-executor-%s", simple.Name),
 					Containers:         containers,
 					Volumes: []corev1.Volume{
 						{

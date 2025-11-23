@@ -45,11 +45,3 @@ func ParseOutputs(jsonData []byte) (map[string]string, error) {
 
 	return result, nil
 }
-
-// ExtractConnectionInfo extracts RDS connection information from outputs
-func ExtractConnectionInfo(outputs map[string]string) (endpoint, username, password string) {
-	endpoint = outputs["endpoint"]
-	username = outputs["username"]
-	password = outputs["password"]
-	return
-}

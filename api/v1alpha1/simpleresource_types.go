@@ -32,13 +32,9 @@ type SimpleResourceStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// RandomValue is the generated random string
+	// Outputs contains the outputs from the Terraform apply
 	// +optional
-	RandomValue string `json:"randomValue,omitempty"`
-
-	// FilePath is the path to the created file
-	// +optional
-	FilePath string `json:"filePath,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty"`
 
 	// LastAppliedHash tracks the hash of the last applied spec
 	// +optional

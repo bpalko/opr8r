@@ -48,7 +48,7 @@ type SimpleResourceReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *SimpleResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-
+	logger.Info("Reconciling SimpleResource", "NamespacedName", req.NamespacedName)
 	// Fetch the SimpleResource resource
 	simple := &infrav1alpha1.SimpleResource{}
 	if err := r.Get(ctx, req.NamespacedName, simple); err != nil {
@@ -61,19 +61,22 @@ func (r *SimpleResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Handle deletion
 	if !simple.ObjectMeta.DeletionTimestamp.IsZero() {
+		logger.Info("SimpleResource is being deleted, handling finalizer for", "Name", simple.Name)
 		return r.reconcileDelete(ctx, simple)
 	}
 
 	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(simple, SimpleFinalizerName) {
 		controllerutil.AddFinalizer(simple, SimpleFinalizerName)
+		logger.Info("Adding finalizer to SimpleResource", "Name", simple.Name)
 		if err := r.Update(ctx, simple); err != nil {
+			logger.Error(err, "Failed to add finalizer to SimpleResource", "Name", simple.Name)
 			return ctrl.Result{}, err
 		}
 	}
 
-	// Ensure ServiceAccount exists in this namespace
-	if err := r.ensureServiceAccount(ctx, simple.Namespace); err != nil {
+	// Ensure ServiceAccount exists for this resource
+	if err := r.ensureServiceAccount(ctx, simple); err != nil {
 		logger.Error(err, "Failed to ensure ServiceAccount exists")
 		return ctrl.Result{}, err
 	}
@@ -85,13 +88,14 @@ func (r *SimpleResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // reconcileNormal handles the normal reconciliation flow
 func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *infrav1alpha1.SimpleResource) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-
+	logger.Info("Reconciling SimpleResource normal flow", "Name", simple.Name)
 	// Compute spec hash for change detection
 	currentHash := terraform.ComputeSpecHash(&simple.Spec)
 
 	// Check if we need to apply changes
 	needsApply := false
 	if simple.Status.Phase == "" || simple.Status.Phase == PhasePending {
+		logger.Info("Initial apply needed for SimpleResource", "Name", simple.Name)
 		needsApply = true
 	} else if simple.Status.LastAppliedHash != currentHash {
 		needsApply = true
@@ -100,6 +104,7 @@ func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *
 
 	if !needsApply && simple.Status.Phase == PhaseReady {
 		// Nothing to do
+		logger.Info("SimpleResource is up-to-date and ready, no action needed", "Name", simple.Name)
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
@@ -110,7 +115,7 @@ func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *
 		return ctrl.Result{}, err
 	}
 	if hasRunningJob {
-		logger.Info("Terraform job already running, waiting for completion")
+		logger.Info("Terraform job already running, waiting for completion", "Name", simple.Name)
 		simple.Status.Phase = PhaseApplying
 		simple.Status.Message = "Waiting for existing Terraform job to complete"
 		if err := r.Status().Update(ctx, simple); err != nil {
@@ -136,6 +141,7 @@ func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *
 	)
 
 	// Run Terraform apply
+	logger.Info("Starting Terraform apply for SimpleResource", "Name", simple.Name)
 	outputs, err := executor.Apply(ctx, simple)
 	if err != nil {
 		logger.Error(err, "Failed to apply Terraform")
@@ -147,15 +153,10 @@ func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 
-	// Extract outputs
-	randomValue := outputs["random_value"]
-	filePath := outputs["file_path"]
-
 	// Update status
 	simple.Status.Phase = PhaseReady
 	simple.Status.Message = "SimpleResource is ready"
-	simple.Status.RandomValue = randomValue
-	simple.Status.FilePath = filePath
+	simple.Status.Outputs = outputs
 	simple.Status.LastAppliedHash = currentHash
 
 	if err := r.Status().Update(ctx, simple); err != nil {
@@ -169,14 +170,16 @@ func (r *SimpleResourceReconciler) reconcileNormal(ctx context.Context, simple *
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully reconciled SimpleResource", "randomValue", randomValue, "filePath", filePath)
+	logger.Info("Successfully reconciled SimpleResource")
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
 // reconcileDelete handles deletion with finalizer
 func (r *SimpleResourceReconciler) reconcileDelete(ctx context.Context, simple *infrav1alpha1.SimpleResource) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	logger.Info("Reconciling SimpleResource deletion", "Name", simple.Name)
 
+	// If finalizer not present, nothing to do
 	if !controllerutil.ContainsFinalizer(simple, SimpleFinalizerName) {
 		return ctrl.Result{}, nil
 	}
@@ -188,7 +191,7 @@ func (r *SimpleResourceReconciler) reconcileDelete(ctx context.Context, simple *
 		return ctrl.Result{}, err
 	}
 	if hasRunningJob {
-		logger.Info("Terraform destroy job already running, waiting for completion")
+		logger.Info("Terraform destroy job already running, waiting for completion", "Name", simple.Name)
 		simple.Status.Phase = PhaseDestroying
 		simple.Status.Message = "Waiting for existing Terraform destroy job to complete"
 		if err := r.Status().Update(ctx, simple); err != nil {
@@ -216,6 +219,7 @@ func (r *SimpleResourceReconciler) reconcileDelete(ctx context.Context, simple *
 	)
 
 	// Run Terraform destroy
+	logger.Info("Starting Terraform destroy for SimpleResource", "Name", simple.Name)
 	if err := executor.Destroy(ctx, simple); err != nil {
 		logger.Error(err, "Failed to destroy Terraform resources")
 		simple.Status.Message = fmt.Sprintf("Terraform destroy failed: %v", err)
@@ -226,8 +230,10 @@ func (r *SimpleResourceReconciler) reconcileDelete(ctx context.Context, simple *
 	}
 
 	// Remove finalizer
+	logger.Info("Removing finalizer from SimpleResource", "Name", simple.Name)
 	controllerutil.RemoveFinalizer(simple, SimpleFinalizerName)
 	if err := r.Update(ctx, simple); err != nil {
+		logger.Error(err, "Failed to remove finalizer from SimpleResource", "Name", simple.Name)
 		return ctrl.Result{}, err
 	}
 
@@ -237,8 +243,10 @@ func (r *SimpleResourceReconciler) reconcileDelete(ctx context.Context, simple *
 
 // reconcileSecret creates or updates a Secret with Terraform outputs
 func (r *SimpleResourceReconciler) reconcileSecret(ctx context.Context, simple *infrav1alpha1.SimpleResource, outputs map[string]string) error {
-	secretName := fmt.Sprintf("%s-simple-outputs", simple.Name)
+	logger := log.FromContext(ctx)
+	logger.Info("Reconciling Secret for SimpleResource outputs", "Name", simple.Name)
 
+	secretName := fmt.Sprintf("%s-simple-outputs", simple.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -265,11 +273,14 @@ func (r *SimpleResourceReconciler) reconcileSecret(ctx context.Context, simple *
 		return nil
 	})
 
+	logger.Info("Successfully reconciled Secret for SimpleResource outputs", "Name", simple.Name)
 	return err
 }
 
 // hasRunningJob checks if there's an active Terraform job for this resource
 func (r *SimpleResourceReconciler) hasRunningJob(ctx context.Context, simple *infrav1alpha1.SimpleResource) (bool, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("Checking for running Terraform jobs for SimpleResource", "Name", simple.Name)
 	jobList := &batchv1.JobList{}
 
 	// List all jobs with our label
@@ -296,23 +307,35 @@ func (r *SimpleResourceReconciler) hasRunningJob(ctx context.Context, simple *in
 		}
 	}
 
+	logger.Info("No running Terraform jobs found for SimpleResource", "Name", simple.Name)
 	return false, nil
 }
 
-// ensureServiceAccount creates the terraform-executor ServiceAccount and RoleBinding if they don't exist
-func (r *SimpleResourceReconciler) ensureServiceAccount(ctx context.Context, namespace string) error {
-	// Create ServiceAccount
+// ensureServiceAccount creates a unique ServiceAccount and RoleBinding for this SimpleResource
+func (r *SimpleResourceReconciler) ensureServiceAccount(ctx context.Context, simple *infrav1alpha1.SimpleResource) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Reconcile ServiceAccount and RoleBinding for SimpleResource", "Name", simple.Name)
+
+	// Create unique names based on the SimpleResource name
+	saName := fmt.Sprintf("terraform-executor-%s", simple.Name)
+	rbName := fmt.Sprintf("terraform-executor-%s-binding", simple.Name)
+
+	// Create ServiceAccount with owner reference
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "terraform-executor",
-			Namespace: namespace,
+			Name:      saName,
+			Namespace: simple.Namespace,
 		},
 	}
 
-	err := r.Get(ctx, client.ObjectKey{Name: sa.Name, Namespace: namespace}, sa)
+	err := r.Get(ctx, client.ObjectKey{Name: sa.Name, Namespace: simple.Namespace}, sa)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
+		}
+		// Set owner reference so SA is deleted when SimpleResource is deleted
+		if err := controllerutil.SetControllerReference(simple, sa, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference on ServiceAccount: %w", err)
 		}
 		// Create the ServiceAccount
 		if err := r.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -323,8 +346,8 @@ func (r *SimpleResourceReconciler) ensureServiceAccount(ctx context.Context, nam
 	// Create RoleBinding to grant permissions
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "terraform-executor-binding",
-			Namespace: namespace,
+			Name:      rbName,
+			Namespace: simple.Namespace,
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
@@ -334,16 +357,20 @@ func (r *SimpleResourceReconciler) ensureServiceAccount(ctx context.Context, nam
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      "terraform-executor",
-				Namespace: namespace,
+				Name:      saName,
+				Namespace: simple.Namespace,
 			},
 		},
 	}
 
-	err = r.Get(ctx, client.ObjectKey{Name: rb.Name, Namespace: namespace}, rb)
+	err = r.Get(ctx, client.ObjectKey{Name: rb.Name, Namespace: simple.Namespace}, rb)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
+		}
+		// Set owner reference so RoleBinding is deleted when SimpleResource is deleted
+		if err := controllerutil.SetControllerReference(simple, rb, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference on RoleBinding: %w", err)
 		}
 		// Create the RoleBinding
 		if err := r.Create(ctx, rb); err != nil && !apierrors.IsAlreadyExists(err) {

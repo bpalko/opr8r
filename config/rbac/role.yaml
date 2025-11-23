@@ -1,9 +1,34 @@
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  name: opr8r-manager-role
 rules:
+- apiGroups:
+  - infra.opr8r
+  resources:
+  - simpleresources
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infra.opr8r
+  resources:
+  - simpleresources/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - infra.opr8r
+  resources:
+  - simpleresources/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - batch
   resources:
@@ -17,15 +42,9 @@ rules:
   - update
   - watch
 - apiGroups:
-  - batch
+  - ""
   resources:
-  - jobs/status
-  verbs:
-  - get
-- apiGroups:
-  - opr8r.opr8r.io
-  resources:
-  - opr8rs
+  - configmaps
   verbs:
   - create
   - delete
@@ -35,16 +54,38 @@ rules:
   - update
   - watch
 - apiGroups:
-  - opr8r.opr8r.io
+  - ""
   resources:
-  - opr8rs/finalizers
+  - secrets
   verbs:
-  - update
-- apiGroups:
-  - opr8r.opr8r.io
-  resources:
-  - opr8rs/status
-  verbs:
+  - create
+  - delete
   - get
+  - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - get
+  - list

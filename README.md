@@ -1,135 +1,327 @@
 # opr8r
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A simple Kubernetes operator that demonstrates managing Terraform resources via Kubernetes Jobs.
 
-## Getting Started
+## What is This?
+
+This is a learning-focused operator that manages a **SimpleResource** custom resource. When you create a SimpleResource, the operator:
+
+1. Renders a Terraform template with your spec
+2. Creates a Kubernetes Job that runs `terraform init && terraform apply`
+3. Waits for the Job to complete
+4. Extracts Terraform outputs and stores them in a Secret
+5. Updates the resource status
+
+When you delete a SimpleResource, a finalizer ensures `terraform destroy` runs first.
+
+## Why This Exists
+
+This project solves a specific problem: running Terraform as a first-class citizen in Kubernetes, managed through the reconciliation loop. Instead of relying on CI/CD pipelines or external tools, the infrastructure becomes part of your cluster's declarative state.
+
+## Features
+
+- **Simple to understand**: Uses local Terraform providers (no cloud credentials needed)
+- **Full lifecycle management**: Create → Update → Delete with finalizers
+- **Idempotent**: Tracks spec changes via hash, only re-applies when needed
+- **Kubernetes-native**: Outputs stored in Secrets, resources tracked as CRDs
+- **Observable**: Full status reporting and phase tracking
+
+## Quick Start
 
 ### Prerequisites
-- go version v1.23.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- Go 1.22+
+- [Kind](https://kind.sigs.k8s.io/) or any Kubernetes cluster
+- kubectl
 
-```sh
-make docker-build docker-push IMG=<some-registry>/opr8r:tag
+### 1. Create a Kind Cluster
+
+```bash
+kind create cluster --name opr8r
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+### 2. Install the CRD
 
-**Install the CRDs into the cluster:**
-
-```sh
-make install
+```bash
+kubectl apply -f config/crd/bases/infra.opr8r_simpleresources.yaml
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+### 3. Run the Operator
 
-```sh
-make deploy IMG=<some-registry>/opr8r:tag
+```bash
+go run cmd/main.go
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+The operator will automatically create the `terraform-executor` ServiceAccount and RoleBinding in each namespace where you create SimpleResources.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+### 4. Create a Resource
 
-```sh
-kubectl apply -k config/samples/
+In another terminal:
+
+```bash
+kubectl apply -f config/samples/simple_v1alpha1_simpleresource.yaml
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+### 5. Watch It Work
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+```bash
+# Watch the resource
+kubectl get simple -w
 
-```sh
-kubectl delete -k config/samples/
+# Watch the Terraform jobs
+kubectl get jobs -w
+
+# Check the status
+kubectl get simple simpleresource-sample -o yaml
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+You'll see:
+- A Terraform Job created
+- The Job runs terraform init and apply
+- Status updates to "Ready"
+- A random string generated and stored
 
-```sh
-make uninstall
+### 6. View Outputs
+
+```bash
+# Get the secret with outputs
+kubectl get secret simpleresource-sample-simple-outputs -o yaml
+
+# View job logs
+kubectl logs -l infra.opr8r/simpleresource=simpleresource-sample
 ```
 
-**UnDeploy the controller from the cluster:**
+## How It Works
 
-```sh
-make undeploy
+### The Reconciliation Loop
+
+```
+User creates SimpleResource
+    ↓
+Controller detects new resource
+    ↓
+Render Terraform template
+    ↓
+Create Kubernetes Job (with 2 containers)
+    ↓
+Job Pod starts
+    ├─ Container 1: Runs terraform init && apply, writes outputs
+    └─ Container 2: Waits for terraform, creates Secret with outputs
+    ↓
+Controller waits for Job completion
+    ↓
+Extract outputs from Secret created by sidecar
+    ↓
+Parse Terraform outputs to map
+    ↓
+Update resource status (phase, randomValue, etc.)
+    ↓
+Create/update user-facing Secret with outputs
+    ↓
+Requeue for periodic reconciliation
 ```
 
-## Project Distribution
+### The SimpleResource
 
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/opr8r:tag
+```yaml
+apiVersion: infra.opr8r/v1alpha1
+kind: SimpleResource
+metadata:
+  name: my-resource
+spec:
+  length: 16  # Length of random string to generate
+  prefix: "test"  # Optional prefix
+  vars:  # Optional Terraform variables
+    special: "true"
+    upper: "true"
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+This generates:
+- A random string of specified length
+- A local file with the output
+- Outputs stored in a Kubernetes Secret
 
-2. Using the installer
+### Status Tracking
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+The operator updates the resource status through these phases:
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/opr8r/<tag or branch>/dist/install.yaml
+- **Pending**: Initial state
+- **Applying**: Running terraform apply
+- **Ready**: Successfully applied
+- **Error**: Something failed
+- **Destroying**: Running terraform destroy
+
+## Project Structure
+
+```
+opr8r/
+├── api/v1alpha1/              # CRD definitions
+│   ├── simpleresource_types.go
+│   └── groupversion_info.go
+├── internal/controller/        # Controller logic
+│   └── simpleresource_controller.go
+├── pkg/terraform/             # Terraform helpers
+│   ├── executor.go           # Orchestrates workflow
+│   ├── renderer.go           # Template rendering
+│   ├── job_runner.go         # Job management
+│   └── outputs.go            # Output parsing
+├── modules/simple/            # Terraform template
+│   └── main.tf.tpl
+├── config/                    # Kubernetes manifests
+│   ├── crd/                  # CRD YAML
+│   ├── rbac/                 # RBAC rules
+│   ├── manager/              # Deployment
+│   └── samples/              # Example resources
+└── cmd/main.go               # Entry point
 ```
 
-### By providing a Helm Chart
+## Development
 
-1. Build the chart using the optional helm plugin
+```bash
+# Format code
+make fmt
 
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
+# Run linter
+make vet
+
+# Build binary
+make build
+
+# Build Docker image
+make docker-build IMG=your-registry/opr8r:tag
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+## Testing Different Scenarios
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+### Test Spec Changes
 
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+Modify the resource to trigger a re-apply:
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+```bash
+kubectl patch simple simpleresource-sample --type='json' \
+  -p='[{"op": "replace", "path": "/spec/length", "value": 20}]'
+```
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+The operator will:
+1. Detect the spec hash changed
+2. Create a new Terraform Job
+3. Apply the changes
+4. Update status with new outputs
+
+### Test Deletion
+
+```bash
+kubectl delete simple simpleresource-sample
+```
+
+The operator will:
+1. Detect deletion timestamp
+2. Update status to "Destroying"
+3. Create a terraform destroy Job
+4. Wait for completion
+5. Remove the finalizer
+6. Allow Kubernetes to delete the resource
+
+### Test Multiple Resources
+
+```bash
+for i in {1..3}; do
+  cat <<EOF | kubectl apply -f -
+apiVersion: infra.opr8r/v1alpha1
+kind: SimpleResource
+metadata:
+  name: test-$i
+spec:
+  length: $((i * 5))
+EOF
+done
+```
+
+Watch them all reconcile in parallel.
+
+## Understanding the Code
+
+### Controller (`internal/controller/simpleresource_controller.go`)
+
+The controller implements three main functions:
+
+1. **Reconcile**: Entry point, routes to normal or delete reconciliation
+2. **reconcileNormal**: Handles create/update logic
+3. **reconcileDelete**: Handles deletion with finalizer
+
+Key patterns:
+- Finalizers prevent deletion until cleanup completes
+- Hash tracking enables idempotent reconciliation
+- Phase tracking provides observability
+
+### Terraform Helpers (`pkg/terraform/`)
+
+**Executor**: High-level orchestration
+- `Apply()`: Render → Run Job → Parse outputs
+- `Destroy()`: Render → Run destroy Job → Cleanup
+
+**Renderer**: Template processing
+- Reads `.tpl` file
+- Substitutes values from spec
+- Writes rendered `main.tf`
+
+**JobRunner**: Kubernetes Job management
+- Creates ConfigMap with Terraform files
+- Builds Job spec with sidecar pattern (see below)
+- Waits for completion
+- Retrieves outputs from Secret created by sidecar
+
+**Output Extraction**: Uses a sidecar container pattern
+- Main container runs Terraform and writes outputs to shared volume
+- Sidecar container waits for completion, then creates Secret with outputs
+- Controller reads outputs from Secret
+
+### Terraform Template (`modules/simple/main.tf.tpl`)
+
+Uses Go template syntax to inject values:
+
+```hcl
+resource "random_string" "value" {
+  length = {{ .Length }}
+}
+```
+
+## Troubleshooting
+
+### Job fails with "ImagePullBackOff"
+
+The Kubernetes cluster can't pull `hashicorp/terraform:1.7.0`. Ensure Docker/containerd has internet access.
+
+### Operator can't create Jobs
+
+Check RBAC permissions:
+```bash
+kubectl describe clusterrole opr8r-manager-role
+```
+
+### Terraform apply fails
+
+Check the Job logs:
+```bash
+kubectl logs -l infra.opr8r/simpleresource=<name>
+```
+
+### Resource stuck in "Applying"
+
+The Job might have failed. Check:
+```bash
+kubectl get jobs
+kubectl describe job <job-name>
+```
+
+## References
+
+- [Kubebuilder Book](https://book.kubebuilder.io/)
+- [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)
+- [Terraform](https://www.terraform.io/)
 
 ## License
 
-Copyright 2025.
+Apache License 2.0
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+I retain all copyright to my contributions to this repository.

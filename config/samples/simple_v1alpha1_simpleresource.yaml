@@ -1,0 +1,18 @@
+apiVersion: infra.opr8r/v1alpha1
+kind: SimpleResource
+metadata:
+  name: simpleresource-sample
+  namespace: default
+spec:
+  # Generate a random string of this length
+  length: 16
+
+  # Optional: prefix for output
+  prefix: "test"
+
+  # Optional: custom variables for Terraform
+  vars:
+    special: "true"
+    upper: "true"
+    lower: "true"
+    numeric: "true"

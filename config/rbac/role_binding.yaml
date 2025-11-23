@@ -1,15 +1,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  labels:
-    app.kubernetes.io/name: opr8r
-    app.kubernetes.io/managed-by: kustomize
-  name: manager-rolebinding
+  name: opr8r-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: manager-role
+  name: opr8r-manager-role
 subjects:
 - kind: ServiceAccount
-  name: controller-manager
-  namespace: system
+  name: opr8r-controller-manager
+  namespace: opr8r-system
